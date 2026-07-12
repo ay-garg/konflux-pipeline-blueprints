@@ -1,0 +1,30 @@
+apiVersion: appstudio.redhat.com/v1alpha1
+kind: Snapshot
+metadata:
+  # A descriptive name for this manually created snapshot
+  name: testrepo-manual-snapshot
+  # Must match your tenant namespace
+  namespace: default-tenant
+  labels:
+    # Must match the Application CR name created in Phase 5
+    appstudio.openshift.io/application: my-first-app
+    # "override" marks this as a manually created snapshot (not from a build)
+    test.appstudio.openshift.io/type: override
+spec:
+  # Must match the Application CR name created in Phase 5
+  application: my-first-app
+  displayName: "Manual test snapshot for integration test development"
+  components:
+    # Must match the Component CR name created in Phase 5
+    - name: testrepo
+      # Replace with the actual image digest from a previous successful push build.
+      # Get the image URL and digest from the last push PipelineRun:
+      #   NS="default-tenant"
+      #   PR=$(oc get pipelinerun -n $NS --sort-by=.metadata.creationTimestamp \
+      #          -o jsonpath='{.items[-1].metadata.name}')
+      #   oc get pipelinerun $PR -n $NS \
+      #     -o jsonpath='{.status.results[?(@.name=="IMAGE_URL")].value}'
+      #   oc get pipelinerun $PR -n $NS \
+      #     -o jsonpath='{.status.results[?(@.name=="IMAGE_DIGEST")].value}'
+      # Then combine as: quay.io/YOUR-ORG/testrepo@sha256:<actual-digest>
+      containerImage: quay.io/YOUR-ORG/testrepo@sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc123

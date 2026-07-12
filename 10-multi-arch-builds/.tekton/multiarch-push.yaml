@@ -1,0 +1,72 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  annotations:
+    # Replace YOUR-USERNAME with your GitHub username (owner of your testrepo fork)
+    build.appstudio.openshift.io/repo: https://github.com/YOUR-USERNAME/testrepo?rev={{revision}}
+    build.appstudio.redhat.com/commit_sha: '{{revision}}'
+    build.appstudio.redhat.com/target_branch: '{{target_branch}}'
+    # cancel-in-progress: false — push builds produce production images; let them finish.
+    pipelinesascode.tekton.dev/cancel-in-progress: "false"
+    pipelinesascode.tekton.dev/max-keep-runs: "3"
+    # This file REPLACES .tekton/testrepo-push.yaml — both share the same CEL
+    # expression. Keeping both files causes two PipelineRuns per push.
+    pipelinesascode.tekton.dev/on-cel-expression: event == "push" && target_branch == "main"
+  labels:
+    appstudio.openshift.io/application: my-first-app
+    appstudio.openshift.io/component: testrepo
+    pipelines.appstudio.openshift.io/type: build
+  name: testrepo-multiarch-on-push
+  namespace: default-tenant
+spec:
+  params:
+  - name: git-url
+    value: '{{source_url}}'
+  - name: revision
+    value: '{{revision}}'
+  # Replace YOUR-ORG with your quay.io username or org.
+  # Must match the containerImage field in your Component CR.
+  - name: output-image
+    value: quay.io/YOUR-ORG/testrepo:{{revision}}
+  - name: dockerfile
+    value: Dockerfile
+
+  # ── build-platforms ─────────────────────────────────────────────────────────
+  # Tekton Matrix fans out one build-images TaskRun per entry in parallel.
+  # The per-arch images are merged into a single OCI Image Index by the
+  # build-image-index task. Remove any platform you do not need.
+  #
+  # IMPORTANT: This pipeline requires the Multi-Platform Controller to be
+  # installed and configured with remote build hosts for each architecture.
+  # On CRC (OpenShift Local) the controller is not present — the build pods
+  # will hang waiting for the SSH secret. See README.md for options.
+  - name: build-platforms
+    value:
+    - linux/amd64
+    - linux/arm64
+    - linux/s390x
+
+  # ── Pipeline bundle ─────────────────────────────────────────────────────────
+  # Uses the multi-platform variant of the docker-build pipeline, pinned by
+  # digest. This bundle includes all standard checks AND the Tekton Matrix
+  # for parallel per-arch builds and the build-image-index merge task.
+  #
+  # Find other available pipeline variants at:
+  # https://github.com/konflux-ci/build-definitions/tree/main/pipelines
+  pipelineRef:
+    resolver: bundles
+    params:
+    - name: bundle
+      value: quay.io/konflux-ci/tekton-catalog/pipeline-docker-build-multi-platform-oci-ta@sha256:17a3c94c33742e19f35c2516bbd7fab4ed702838c7a6d47daea70100d350e266
+    - name: name
+      value: docker-build-multi-platform-oci-ta
+    - name: kind
+      value: pipeline
+
+  taskRunTemplate:
+    serviceAccountName: build-pipeline-testrepo
+  workspaces:
+  - name: git-auth
+    secret:
+      secretName: '{{ git_auth_secret }}'
+status: {}

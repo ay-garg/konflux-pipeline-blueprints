@@ -1,0 +1,36 @@
+apiVersion: appstudio.redhat.com/v1alpha1
+kind: ReleasePlanAdmission
+metadata:
+  # Conventionally <component-name>-admission
+  name: testrepo-admission
+  # Same namespace as the ReleasePlan — no separate managed namespace for this learning setup
+  namespace: default-tenant
+spec:
+  # Must match the namespace where the ReleasePlan lives
+  origin: default-tenant
+
+  # Must match the Application CR name created in Phase 5
+  applications:
+    - my-first-app
+
+  # The Tekton pipeline to run when a Release is triggered.
+  # The git resolver fetches the pipeline from the repo at release time —
+  # no need to apply it to the cluster separately.
+  pipeline:
+    pipelineRef:
+      resolver: git
+      params:
+        - name: url
+          # Replace YOUR-USERNAME with your GitHub username (owner of the testrepo fork).
+          # In production this would typically be a dedicated release-pipelines repository.
+          value: https://github.com/YOUR-USERNAME/testrepo
+        - name: revision
+          value: main
+        - name: pathInRepo
+          # Path to the release pipeline inside the repository
+          value: release/release-pipeline.yaml
+
+  # EnterpriseContractPolicy to enforce before the release pipeline runs.
+  # The CR must exist in this namespace before any Release is triggered.
+  # Create it by copying the cluster default — see README.md Step 2.
+  policy: testrepo-ec-policy

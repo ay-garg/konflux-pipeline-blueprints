@@ -1,0 +1,68 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  annotations:
+    # Replace YOUR-USERNAME with your GitHub username (owner of your testrepo fork)
+    build.appstudio.openshift.io/repo: https://github.com/YOUR-USERNAME/testrepo?rev={{revision}}
+    build.appstudio.redhat.com/commit_sha: '{{revision}}'
+    build.appstudio.redhat.com/target_branch: '{{target_branch}}'
+    # cancel-in-progress: false — push builds produce production images; let them finish.
+    pipelinesascode.tekton.dev/cancel-in-progress: "false"
+    pipelinesascode.tekton.dev/max-keep-runs: "3"
+    pipelinesascode.tekton.dev/on-cel-expression: event == "push" && target_branch == "main"
+  labels:
+    appstudio.openshift.io/application: my-first-app
+    appstudio.openshift.io/component: testrepo
+    pipelines.appstudio.openshift.io/type: build
+  name: testrepo-on-push
+  namespace: default-tenant
+spec:
+  params:
+  - name: git-url
+    value: '{{source_url}}'
+  - name: revision
+    value: '{{revision}}'
+  # Replace YOUR-ORG with your quay.io username or org.
+  # Must match the containerImage field in your Component CR.
+  - name: output-image
+    value: quay.io/YOUR-ORG/testrepo:{{revision}}
+  - name: dockerfile
+    value: Dockerfile
+  # ── skip-checks ────────────────────────────────────────────────────────────────
+  # Set to "true" on CRC arm64 (Silicon Mac) — the post-build scan task images
+  # (Clair, ClamAV, SAST, ecosystem-cert-preflight-checks) are built amd64-only
+  # and cannot be pulled on an arm64 node. Remove or set to "false" on a full
+  # amd64 cluster or the hosted Konflux service where all checks run normally.
+  - name: skip-checks
+    value: "true"
+
+  # ── Pipeline bundle ─────────────────────────────────────────────────────────────
+  # References the full pipeline-docker-build-oci-ta pipeline as a pinned OCI
+  # bundle. The bundle already includes all standard Konflux tasks:
+  #   init → clone → prefetch → buildah → build-image-index
+  #   + SAST, Clair, ClamAV, deprecated-image-check, rpms-signature-scan,
+  #     apply-tags, push-dockerfile
+  #
+  # Pinned by digest (not :tag) for reproducibility — the exact same pipeline
+  # runs every time regardless of upstream changes.
+  #
+  # LIMITATION: pipelineRef does not support appending custom tasks. To add a
+  # custom print-build-summary step, use the inline pipelineSpec approach in
+  # 06-pipeline-as-code/ instead.
+  pipelineRef:
+    resolver: bundles
+    params:
+    - name: bundle
+      value: quay.io/konflux-ci/tekton-catalog/pipeline-docker-build-oci-ta@sha256:49d8470b97d44f0e557b73d50e7f96c21238bcf66b603e7450ed4927842036ce
+    - name: name
+      value: docker-build-oci-ta
+    - name: kind
+      value: pipeline
+
+  taskRunTemplate:
+    serviceAccountName: build-pipeline-testrepo
+  workspaces:
+  - name: git-auth
+    secret:
+      secretName: '{{ git_auth_secret }}'
+status: {}

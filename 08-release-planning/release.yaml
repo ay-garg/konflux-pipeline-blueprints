@@ -1,0 +1,16 @@
+apiVersion: appstudio.redhat.com/v1alpha1
+kind: Release
+metadata:
+  # Give each release a unique, descriptive name
+  name: testrepo-release-v1
+  # Must match your tenant namespace
+  namespace: default-tenant
+spec:
+  # The Snapshot to release — must have passed all integration tests.
+  # Get the name of the LATEST passing Snapshot (sort by creationTimestamp descending):
+  #   oc get snapshot -n default-tenant -o json | \
+  #     jq -r '[.items[] | select(.status.conditions // [] | any(.type == "AppStudioTestSucceeded" and .status == "True"))] | sort_by(.metadata.creationTimestamp) | reverse | .[0].metadata.name'
+  snapshot: testrepo-manual-snapshot
+
+  # Must match the ReleasePlan name in release-plan.yaml
+  releasePlan: testrepo-release-plan

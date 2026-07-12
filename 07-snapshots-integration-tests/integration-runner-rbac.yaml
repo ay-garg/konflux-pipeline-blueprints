@@ -1,0 +1,56 @@
+# ── PREREQUISITE 1: RBAC for konflux-integration-runner ──────────────────────
+#
+# WHY THIS IS NEEDED:
+# The integration test pipeline (testrepo-integration.yaml) creates a Kubernetes
+# Job in the tenant namespace to run the built container image, then reads its logs.
+# By default the konflux-integration-runner service account only has narrow
+# permissions and cannot create, delete, or list batch/jobs or pod logs in
+# the tenant namespace. Without this RBAC the test PipelineRun fails immediately:
+#
+#   Error from server (Forbidden): jobs.batch "test-hello" is forbidden:
+#   User "system:serviceaccount:default-tenant:konflux-integration-runner"
+#   cannot delete resource "jobs" in API group "batch" in the namespace "default-tenant"
+#
+# This is a known gap in the standard Konflux install — the same Role+RoleBinding
+# pattern is used in the official Konflux e2e test fixtures:
+#   https://github.com/konflux-ci/konflux-ci/blob/main/test/resources/demo-users/user/ns2/appstudio-pipeline-integration-runner-rbac.yaml
+#
+# Apply this once before creating the IntegrationTestScenario:
+#   oc apply -f integration-runner-rbac.yaml
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  # Must match your tenant namespace
+  namespace: default-tenant
+  name: default-tenant-pod-viewer-job-creator
+rules:
+- apiGroups: [""]
+  resources:
+    - pods
+  verbs: ["get", "list", "watch", "delete"]
+- apiGroups: ["batch"]
+  resources:
+    - jobs
+  verbs: ["create", "delete", "get", "list", "watch"]
+- apiGroups: [""]
+  resources:
+    - pods/log
+  verbs: ["get", "list"]
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  # Must match your tenant namespace
+  namespace: default-tenant
+  name: default-tenant-pod-viewer-job-creator-binding
+subjects:
+# Grants the job viewer/creator permissions to konflux-integration-runner
+# which is the SA Konflux uses to run integration test PipelineRuns
+- kind: ServiceAccount
+  name: konflux-integration-runner
+  namespace: default-tenant
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: default-tenant-pod-viewer-job-creator

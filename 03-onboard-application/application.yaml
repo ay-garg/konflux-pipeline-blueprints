@@ -1,0 +1,26 @@
+## Step 1: Fork https://github.com/konflux-ci/testrepo (click Fork in GitHub)
+##
+## ⚠ IMPORTANT — GitHub App installation on the forked repo:
+##   In Phase 3 Step B.8 you installed the GitHub App. If you chose
+##   "Only select repositories" (rather than "All repositories") the App
+##   is NOT installed on your new fork and PaC webhooks will be silently ignored.
+##
+##   To add the fork now:
+##     GitHub → Settings → Applications → <Your App Name> → Configure
+##     → Repository access → "Only select repositories"
+##     → Add your fork → Save
+##
+##   Alternatively, switch the App to "All repositories" to avoid this for
+##   every future fork or new repository you onboard to Konflux.
+##
+## Step 2: Confirm the GitHub App is installed on the fork (see note above)
+## Step 3: Apply the Application and Component resources below
+
+# The Application is a logical grouping of related Components
+apiVersion: appstudio.redhat.com/v1alpha1
+kind: Application
+metadata:
+  name: my-first-app
+  namespace: default-tenant    # your tenant namespace
+spec:
+  displayName: My First Konflux Application

@@ -1,0 +1,29 @@
+apiVersion: appstudio.redhat.com/v1alpha1
+kind: ReleasePlan
+metadata:
+  # Conventionally <component-name>-release-plan
+  name: testrepo-release-plan
+  # Must match your tenant namespace
+  namespace: default-tenant
+  labels:
+    # "false" = manual release: you create a Release object yourself
+    # "true"  = auto-release: Integration Service creates a Release on every passing Snapshot
+    release.appstudio.openshift.io/auto-release: "true"
+    # REQUIRED for auto-release — tells the Release Service who authorises automated releases.
+    # "standing-attribution: true" means: attribute every automated Release to whoever
+    # created this ReleasePlan (no hardcoded username needed).
+    # Without this label, automated releases fail with:
+    #   "no author in the ReleasePlan found for automated release"
+    # Safe to include even when auto-release is "false" — it has no effect for manual releases.
+    release.appstudio.openshift.io/standing-attribution: "true"
+spec:
+  # Must match the Application CR name created in Phase 5
+  application: my-first-app
+
+  # The namespace where the ReleasePlanAdmission lives.
+  # For this learning setup both the ReleasePlan and ReleasePlanAdmission live
+  # in the same default-tenant namespace — no separate managed namespace needed.
+  target: default-tenant
+
+  # Snapshot must have passed integration tests within this many days to be releasable
+  releaseGracePeriodDays: 7

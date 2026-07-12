@@ -1,0 +1,22 @@
+# The Component points to the source repository and target image
+apiVersion: appstudio.redhat.com/v1alpha1
+kind: Component
+metadata:
+  name: testrepo
+  namespace: default-tenant
+spec:
+  application: my-first-app
+  componentName: testrepo
+  source:
+    git:
+      url: https://github.com/YOUR-USERNAME/testrepo.git  # your fork
+      revision: main
+  containerImage: quay.io/YOUR-ORG/testrepo    # where to push the image
+
+
+## NOTE: Do NOT create a Repository CR manually.
+## When the Build Service reconciles the Component CR above, it automatically:
+##   1. Creates the pipelinesascode.tekton.dev/v1alpha1 Repository object
+##   2. Opens a PR on your fork adding the .tekton/ pipeline definitions
+## You will see this PR appear in your GitHub fork shortly after applying
+## the Component. Merge it (or follow Phase 6 steps) to activate builds.

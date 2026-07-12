@@ -1,0 +1,66 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  annotations:
+    # Replace YOUR-USERNAME with your GitHub username (owner of your testrepo fork)
+    build.appstudio.openshift.io/repo: https://github.com/YOUR-USERNAME/testrepo?rev={{revision}}
+    build.appstudio.redhat.com/commit_sha: '{{revision}}'
+    build.appstudio.redhat.com/pull_request_number: '{{pull_request_number}}'
+    build.appstudio.redhat.com/target_branch: '{{target_branch}}'
+    # cancel-in-progress: true — a new push to the same PR cancels the prior run.
+    # PR builds are disposable; there is no value in completing an outdated commit.
+    pipelinesascode.tekton.dev/cancel-in-progress: "true"
+    pipelinesascode.tekton.dev/max-keep-runs: "3"
+    pipelinesascode.tekton.dev/on-cel-expression: event == "pull_request" && target_branch == "main"
+  labels:
+    appstudio.openshift.io/application: my-first-app
+    appstudio.openshift.io/component: testrepo
+    pipelines.appstudio.openshift.io/type: build
+  name: testrepo-on-pull-request
+  namespace: default-tenant
+spec:
+  params:
+  - name: git-url
+    value: '{{source_url}}'
+  - name: revision
+    value: '{{revision}}'
+  # Replace YOUR-ORG with your quay.io username or org.
+  # The on-pr- prefix and short expiry mark this as a disposable PR image —
+  # it is NOT promoted by the release pipeline.
+  - name: output-image
+    value: quay.io/YOUR-ORG/testrepo:on-pr-{{revision}}
+  # PR images expire after 5 days. Push pipeline images have no expiry by default.
+  - name: image-expires-after
+    value: 5d
+  - name: dockerfile
+    value: Dockerfile
+  # ── skip-checks ────────────────────────────────────────────────────────────────
+  # Same reasoning as the push pipeline: required on CRC arm64 (Silicon Mac).
+  # Remove or set to "false" on a full amd64 cluster or hosted Konflux.
+  - name: skip-checks
+    value: "true"
+
+  # ── Pipeline bundle ─────────────────────────────────────────────────────────────
+  # Same pinned bundle as the push pipeline. All standard tasks are included.
+  # The bundle handles skip-checks internally via when conditions on each task.
+  #
+  # LIMITATION: pipelineRef does not support appending custom tasks. To add the
+  # pr-build-summary task shown in 06-pipeline-as-code/, switch to the inline
+  # pipelineSpec approach there.
+  pipelineRef:
+    resolver: bundles
+    params:
+    - name: bundle
+      value: quay.io/konflux-ci/tekton-catalog/pipeline-docker-build-oci-ta@sha256:49d8470b97d44f0e557b73d50e7f96c21238bcf66b603e7450ed4927842036ce
+    - name: name
+      value: docker-build-oci-ta
+    - name: kind
+      value: pipeline
+
+  taskRunTemplate:
+    serviceAccountName: build-pipeline-testrepo
+  workspaces:
+  - name: git-auth
+    secret:
+      secretName: '{{ git_auth_secret }}'
+status: {}

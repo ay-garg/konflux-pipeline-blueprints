@@ -1,0 +1,78 @@
+# The inline taskSpec blocks in the two PipelineRun files above are convenient
+# for one-off steps that only apply to a single pipeline. Once a task is stable
+# and you want to share it across multiple pipelines, extract it to a standalone
+# Tekton Task CRD like this one.
+#
+# After applying this Task to your namespace, reference it from any PipelineRun:
+#
+#   - name: print-build-summary
+#     taskRef:
+#       name: print-build-summary       # resolves by name in the same namespace
+#     params:
+#     - name: IMAGE_URL
+#       value: $(tasks.build-image-index.results.IMAGE_URL)
+#     - name: IMAGE_DIGEST
+#       value: $(tasks.build-image-index.results.IMAGE_DIGEST)
+#     - name: GIT_URL
+#       value: $(tasks.clone-repository.results.url)
+#     - name: GIT_COMMIT
+#       value: $(tasks.clone-repository.results.commit)
+#     runAfter:
+#     - build-image-index
+#
+# Apply to your tenant namespace:
+#   oc apply -f .tekton/tasks/print-build-summary.yaml -n default-tenant
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: print-build-summary
+  namespace: default-tenant
+  annotations:
+    tekton.dev/displayName: "Print Build Summary"
+    tekton.dev/tags: "notification, summary, debugging"
+spec:
+  description: >-
+    Prints a human-readable summary of a completed Konflux build including
+    the image URL, digest, and source commit. Use this as a template for
+    custom notification steps (Slack, PagerDuty, JIRA webhooks, etc.) —
+    replace the echo statements with your notification tool of choice.
+  params:
+    - name: IMAGE_URL
+      type: string
+      description: "Fully qualified image URL from build-image-index.results.IMAGE_URL"
+    - name: IMAGE_DIGEST
+      type: string
+      description: "Image digest (sha256:...) from build-image-index.results.IMAGE_DIGEST"
+    - name: GIT_URL
+      type: string
+      description: "Source repository URL from clone-repository.results.url"
+    - name: GIT_COMMIT
+      type: string
+      description: "Git commit SHA from clone-repository.results.commit"
+  results:
+    - name: SUMMARY
+      description: "One-line summary — useful as input to downstream notification tasks"
+  steps:
+    - name: summarize
+      image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+      script: |
+        #!/bin/bash
+        echo "=================================================="
+        echo "           KONFLUX BUILD SUMMARY"
+        echo "=================================================="
+        printf '%-22s %s\n' "Source repository:"  "$(params.GIT_URL)"
+        printf '%-22s %s\n' "Git commit:"         "$(params.GIT_COMMIT)"
+        printf '%-22s %s\n' "Built image URL:"    "$(params.IMAGE_URL)"
+        printf '%-22s %s\n' "Image digest:"       "$(params.IMAGE_DIGEST)"
+        echo "=================================================="
+        echo ""
+        echo "Pull the image:"
+        echo "  podman pull $(params.IMAGE_URL)@$(params.IMAGE_DIGEST)"
+        echo ""
+        echo "Verify the signature (Tekton Chains signs after PipelineRun completes):"
+        echo "  cosign verify --key cosign.pub --insecure-ignore-tlog \\"
+        echo "    $(params.IMAGE_URL)@$(params.IMAGE_DIGEST)"
+        echo ""
+        # Write a one-liner result for downstream tasks (e.g. a Slack notifier task)
+        SUMMARY="Built $(params.IMAGE_URL)@$(params.IMAGE_DIGEST) from $(params.GIT_COMMIT)"
+        printf '%s' "$SUMMARY" | tee "$(results.SUMMARY.path)"

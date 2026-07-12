@@ -1,0 +1,28 @@
+apiVersion: appstudio.redhat.com/v1beta2
+kind: IntegrationTestScenario
+metadata:
+  # Name for this test scenario — shown in the Konflux UI test results panel
+  name: testrepo-integration-tests
+  # Must match your tenant namespace — where the Application and Component CRs live
+  namespace: default-tenant
+  labels:
+    test.appstudio.openshift.io/optional: "false"   # failure blocks release
+spec:
+  # Must match the Application CR name created in Phase 5
+  application: my-first-app
+
+  # Points to the integration test pipeline inside your git repository.
+  # The Integration Service resolves this file at test time using the git
+  # resolver — no need to apply the pipeline to the cluster separately.
+  resolverRef:
+    resolver: git
+    params:
+      - name: url
+        # Replace YOUR-USERNAME with your GitHub username (owner of the testrepo fork)
+        value: https://github.com/YOUR-USERNAME/testrepo
+      - name: revision
+        value: main
+      - name: pathInRepo
+        # Path to the test pipeline file inside the repository
+        # This file already exists in the testrepo — do not rename it
+        value: integration-tests/testrepo-integration.yaml

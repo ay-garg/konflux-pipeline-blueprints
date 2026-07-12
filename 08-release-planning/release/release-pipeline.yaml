@@ -1,0 +1,394 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: testrepo-release-to-staging
+  # Fetched from git by the ReleasePlanAdmission git resolver at release time.
+  # Store this file in your testrepo fork at: release/release-pipeline.yaml
+  namespace: default-tenant
+spec:
+  description: >-
+    Production release pipeline for testrepo.
+    Validates the built image with Enterprise Contract (Conforma) then promotes
+    it to the staging registry. Registry credentials come from the regcred secret
+    (kubernetes.io/dockerconfigjson) mounted as a projected volume — this bypasses
+    Tekton cred-init and provides stable credentials to all OCI tools (skopeo,
+    cosign, ec) regardless of the step user identity.
+  params:
+    - name: release
+      type: string
+      description: "The Release CRD name — injected by the Release Service"
+    - name: releasePlan
+      type: string
+      description: "The ReleasePlan CRD name"
+    - name: releasePlanAdmission
+      type: string
+      description: "The ReleasePlanAdmission CRD name"
+    - name: snapshot
+      type: string
+      description: "Snapshot reference — injected by the Release Service as namespace/name"
+    - name: enterpriseContractPolicy
+      type: string
+      description: "Enterprise Contract policy name (not used directly — policy is hardcoded below)"
+
+  tasks:
+
+    # ── Task 1: Extract the image reference from the Snapshot ─────────────────
+    # The Release Service passes snapshot as "namespace/name" (e.g.
+    # "default-tenant/my-first-app-abc123"). This task fetches the Snapshot CR
+    # from the cluster and extracts the containerImage for the testrepo component.
+    - name: extract-images
+      taskSpec:
+        params:
+          - name: snapshot
+        results:
+          - name: image
+            description: "containerImage for the testrepo component"
+        steps:
+          - name: extract
+            # Uses kubectl + jq to fetch and parse the Snapshot CR from the cluster.
+            # oc is not available in this image; kubectl is equivalent here.
+            image: quay.io/ongres/kubectl@sha256:4be5050c456a4751fe3d70086c0387d65e8973a176fe965de4eaeeb8643b2e0a
+            env:
+              - name: SNAPSHOT_REF
+                value: "$(params.snapshot)"
+            script: |
+              #!/bin/bash
+              set -e
+
+              echo "Snapshot reference: $SNAPSHOT_REF"
+
+              if [[ "$SNAPSHOT_REF" == *"/"* ]]; then
+                SNAP_NS="${SNAPSHOT_REF%%/*}"
+                SNAP_NAME="${SNAPSHOT_REF##*/}"
+              else
+                SNAP_NS="default-tenant"
+                SNAP_NAME="$SNAPSHOT_REF"
+              fi
+
+              echo "Fetching snapshot '$SNAP_NAME' from namespace '$SNAP_NS'"
+
+              IMAGE=$(kubectl get snapshot "$SNAP_NAME" -n "$SNAP_NS" -o json | \
+                jq -r '.spec.components[] | select(.name=="testrepo") | .containerImage')
+
+              if [ -z "$IMAGE" ] || [ "$IMAGE" = "null" ]; then
+                echo "ERROR: component 'testrepo' not found in snapshot" >&2
+                kubectl get snapshot "$SNAP_NAME" -n "$SNAP_NS" -o yaml >&2
+                exit 1
+              fi
+
+              echo "Extracted image: $IMAGE"
+              printf '%s' "$IMAGE" > $(results.image.path)
+      params:
+        - name: snapshot
+          value: "$(params.snapshot)"
+
+    # ── Task 2: Enterprise Contract validation ────────────────────────────────
+    # Runs ec validate image against the Enterprise Contract policy using the
+    # quay.io/conforma/cli image directly (inline taskSpec) rather than the
+    # task-verify-enterprise-contract bundle task, which has an OPA v1.x
+    # compatibility issue that causes conftest to fail at compile time.
+    #
+    # Credential approach (projected volume):
+    #   regcred (.dockerconfigjson) is mounted as /var/docker-config/config.json
+    #   via a projected volume and DOCKER_CONFIG is set to that directory.
+    #   This gives all tools (ec, cosign) stable access to registry credentials
+    #   regardless of which user the step runs as — avoids the Tekton cred-init
+    #   permission race that causes "permission denied on /tekton/home/.docker/config.json".
+    #
+    # Tekton cred-init permission fix:
+    #   The write-snapshot step pre-creates /tekton/home/.docker/ with mode 777
+    #   so every subsequent step's cred-init can write its credentials copy
+    #   without hitting permission denied.
+    #
+    # POLICY_CONFIGURATION: enterprise-contract-service/default
+    #   Uses the cluster-managed default EC policy. The @redhat collection
+    #   (excluding hermetic_task, source_image, rpm_repos) is enforced.
+    #   slsa_source_correlated rules will produce a violation because satisfying
+    #   them requires EC config files in the source repo at the exact build commit.
+    #   STRICT is set to false so violations are reported but do not block release.
+    #   Set STRICT to "true" once all EC rules pass cleanly.
+    #
+    # IGNORE_REKOR: true
+    #   Required on self-hosted Konflux — images are signed by Tekton Chains using
+    #   the cluster's internal cosign key. No entry is written to the public
+    #   Sigstore Rekor log at rekor.sigstore.dev.
+    - name: validate-enterprise-contract
+      runAfter:
+        - extract-images
+      taskSpec:
+        params:
+          - name: image
+            type: string
+          - name: POLICY_CONFIGURATION
+            type: string
+            default: "enterprise-contract-service/default"
+          - name: PUBLIC_KEY
+            type: string
+            default: "k8s://openshift-pipelines/public-key"
+          - name: IGNORE_REKOR
+            type: string
+            default: "true"
+          - name: STRICT
+            type: string
+            default: "false"
+          - name: WORKERS
+            type: string
+            default: "4"
+        results:
+          - name: TEST_OUTPUT
+            description: "EC policy evaluation result — SUCCESS, WARNING, or FAILURE"
+        volumes:
+          - name: workdir
+            emptyDir: {}
+          - name: trusted-ca
+            configMap:
+              name: trusted-ca
+              items:
+                - key: ca-bundle.crt
+                  path: ca-bundle.crt
+              optional: true
+          - name: docker-config
+            projected:
+              sources:
+                - secret:
+                    name: regcred
+                    items:
+                      - key: .dockerconfigjson
+                        path: config.json
+        stepTemplate:
+          volumeMounts:
+            - mountPath: /var/workdir
+              name: workdir
+            - mountPath: /mnt/trusted-ca
+              name: trusted-ca
+              readOnly: true
+            - mountPath: /var/docker-config
+              name: docker-config
+              readOnly: true
+          env:
+            - name: HOME
+              value: /tekton/home
+            - name: DOCKER_CONFIG
+              value: /var/docker-config
+
+        steps:
+          # Step 1: Write snapshot JSON and fix Tekton cred-init directory permissions.
+          # Creates /tekton/home/.docker/ with mode 777 so all subsequent steps'
+          # cred-init can write their credentials copy without permission denied.
+          - name: write-snapshot
+            image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+            env:
+              - name: IMAGE
+                value: "$(params.image)"
+            script: |
+              #!/bin/bash
+              set -euo pipefail
+
+              mkdir -p /var/workdir
+              printf '%s' \
+                "{\"components\":[{\"name\":\"testrepo\",\"containerImage\":\"$IMAGE\"}]}" \
+                > /var/workdir/snapshot.json
+              echo "snapshot.json:"
+              cat /var/workdir/snapshot.json
+
+              mkdir -p /tekton/home/.docker
+              chmod 777 /tekton/home/.docker
+              if [ -f /tekton/home/.docker/config.json ]; then
+                chmod 666 /tekton/home/.docker/config.json
+              fi
+
+          # Step 2: Skip TUF — cluster uses internal Tekton Chains key, not public Sigstore
+          - name: initialize-tuf
+            image: quay.io/conforma/cli:latest
+            script: |
+              echo 'TUF_MIRROR not configured — skipping TUF root initialization.'
+
+          # Step 3: Enterprise Contract validation.
+          # --strict=false: ec exits 0 and writes all output files even when violations
+          # exist, ensuring subsequent steps (detailed-report, summary, version) have the
+          # data they need. The actual release-blocking decision is made by the assert step.
+          - name: validate
+            image: quay.io/conforma/cli:latest
+            onError: continue
+            env:
+              - name: POLICY_CONFIGURATION
+                value: "$(params.POLICY_CONFIGURATION)"
+              - name: PUBLIC_KEY
+                value: "$(params.PUBLIC_KEY)"
+              - name: IGNORE_REKOR
+                value: "$(params.IGNORE_REKOR)"
+              - name: WORKERS
+                value: "$(params.WORKERS)"
+            script: |
+              #!/bin/bash
+              set -euo pipefail
+
+              if [ -f "/mnt/trusted-ca/ca-bundle.crt" ]; then
+                export SSL_CERT_FILE="/mnt/trusted-ca/ca-bundle.crt"
+              fi
+
+              ec validate image \
+                --images=/var/workdir/snapshot.json \
+                --policy="${POLICY_CONFIGURATION}" \
+                --public-key="${PUBLIC_KEY}" \
+                --ignore-rekor="${IGNORE_REKOR}" \
+                --workers="${WORKERS}" \
+                --strict=false \
+                --info=true \
+                --timeout=0 \
+                --output="text=/var/workdir/text-report.txt?show-successes=false" \
+                --output="json=/var/workdir/report-json.json" \
+                --output="appstudio=$(results.TEST_OUTPUT.path)"
+
+          # Step 4: Human-readable EC report (violations and warnings only)
+          - name: detailed-report
+            image: quay.io/conforma/cli:latest
+            onError: continue
+            command: ["cat"]
+            args: ["/var/workdir/text-report.txt"]
+
+          # Step 5: TEST_OUTPUT summary (SUCCESS / WARNING / FAILURE + counts)
+          - name: summary
+            image: quay.io/conforma/cli:latest
+            onError: continue
+            command: ["jq"]
+            args: [".", "$(results.TEST_OUTPUT.path)"]
+
+          # Step 6: ec version — recorded for reproducibility and audit
+          - name: version
+            image: quay.io/conforma/cli:latest
+            command: ["ec"]
+            args: ["version"]
+
+          # Step 7: Assert.
+          # STRICT=false: always exits 0 — pipeline continues regardless of violations.
+          # STRICT=true:  exits non-zero if result is FAILURE — pipeline and release blocked.
+          # Change STRICT param to "true" once all EC rules pass cleanly.
+          - name: assert
+            image: quay.io/conforma/cli:latest
+            env:
+              - name: STRICT
+                value: "$(params.STRICT)"
+            command: ["jq"]
+            args:
+              - "--argjson"
+              - "strict"
+              - "$(params.STRICT)"
+              - "-e"
+              - '.result == "SUCCESS" or .result == "WARNING" or ($strict | not)'
+              - "$(results.TEST_OUTPUT.path)"
+      params:
+        - name: image
+          value: "$(tasks.extract-images.results.image)"
+        - name: POLICY_CONFIGURATION
+          value: "enterprise-contract-service/default"
+        - name: PUBLIC_KEY
+          value: "k8s://openshift-pipelines/public-key"
+        - name: IGNORE_REKOR
+          value: "true"
+        - name: STRICT
+          value: "false"
+
+    # ── Task 3: Push the released image to the staging registry ───────────────
+    # Runs after EC validation. With STRICT=false EC always exits 0, so this
+    # task always runs. Set STRICT=true to block here on EC violations.
+    # Uses skopeo with regcred credentials written to /tmp/auth/config.json.
+    - name: push-to-staging-registry
+      runAfter:
+        - validate-enterprise-contract
+      taskSpec:
+        params:
+          - name: source-image
+            type: string
+          - name: target-registry
+            type: string
+            # Replace YOUR-ORG with your staging quay.io org/username
+            default: "quay.io/YOUR-ORG"
+        steps:
+          - name: copy-image
+            image: quay.io/skopeo/stable:latest
+            env:
+              - name: SOURCE
+                value: "$(params.source-image)"
+              - name: TARGET
+                value: "$(params.target-registry)/testrepo:latest"
+              - name: DOCKER_CONFIG_JSON
+                valueFrom:
+                  secretKeyRef:
+                    name: regcred
+                    key: .dockerconfigjson
+            script: |
+              #!/bin/bash
+              set -e
+              mkdir -p /tmp/auth
+              printf '%s' "$DOCKER_CONFIG_JSON" > /tmp/auth/config.json
+              echo "Copying: $SOURCE → $TARGET"
+              skopeo copy \
+                --authfile /tmp/auth/config.json \
+                "docker://$SOURCE" \
+                "docker://$TARGET"
+              echo "Image pushed to staging registry."
+              rm -f /tmp/auth/config.json
+      params:
+        - name: source-image
+          value: "$(tasks.extract-images.results.image)"
+
+    # ── Task 4: Tag the released image as stable ──────────────────────────────
+    - name: post-release-actions
+      runAfter:
+        - push-to-staging-registry
+      taskSpec:
+        params:
+          - name: image
+            type: string
+          - name: release-name
+            type: string
+          - name: target-registry
+            type: string
+            # Replace YOUR-ORG with your staging quay.io org/username
+            default: "quay.io/YOUR-ORG"
+        steps:
+          - name: tag-stable
+            image: quay.io/skopeo/stable:latest
+            env:
+              - name: IMAGE
+                value: "$(params.image)"
+              - name: RELEASE
+                value: "$(params.release-name)"
+              - name: TARGET_REGISTRY
+                value: "$(params.target-registry)"
+              - name: DOCKER_CONFIG_JSON
+                valueFrom:
+                  secretKeyRef:
+                    name: regcred
+                    key: .dockerconfigjson
+            script: |
+              #!/bin/bash
+              set -e
+
+              mkdir -p /tmp/auth
+              printf '%s' "$DOCKER_CONFIG_JSON" > /tmp/auth/config.json
+
+              echo "=================================================="
+              echo "           RELEASE SUMMARY"
+              echo "=================================================="
+              echo "Release name   : $RELEASE"
+              echo "Released image : $IMAGE"
+              echo "=================================================="
+
+              STABLE_TAG="$TARGET_REGISTRY/testrepo:stable"
+              echo ""
+              echo "Tagging as stable: $STABLE_TAG"
+              skopeo copy \
+                --authfile /tmp/auth/config.json \
+                "docker://$IMAGE" \
+                "docker://$STABLE_TAG"
+              echo "Stable tag updated."
+              rm -f /tmp/auth/config.json
+      params:
+        - name: image
+          value: "$(tasks.extract-images.results.image)"
+        - name: release-name
+          value: "$(params.release)"
+        - name: target-registry
+          value: "quay.io/YOUR-ORG"

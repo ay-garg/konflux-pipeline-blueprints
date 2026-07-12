@@ -1,0 +1,77 @@
+# Konflux integration test for testrepo.
+# Runs the built container image as a Kubernetes Job and asserts its logs
+# contain "hello world" — the output produced by entrypoint.sh.
+#
+# This file is already present in the testrepo repository at:
+#   integration-tests/testrepo-integration.yaml
+#
+# The IntegrationTestScenario (integration-test-scenario.yaml) points the
+# Integration Service here via the git resolver, so this pipeline is fetched
+# from the repo at test time. You do NOT apply it manually to the cluster.
+#
+# IMPORTANT: Keep the grep assertion ("hello world") in sync with entrypoint.sh.
+# If you change what entrypoint.sh prints, update the grep below too.
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: testrepo-integration-test
+spec:
+  params:
+    - name: SNAPSHOT
+      type: string
+      description: |
+        JSON snapshot injected by the Konflux Integration Service.
+        Contains the built image reference for the testrepo component:
+          {
+            "components": [
+              {
+                "containerImage": "quay.io/YOUR-ORG/testrepo@sha256:..."
+              }
+            ]
+          }
+  tasks:
+    - name: test-hello-world
+      params:
+        - name: SNAPSHOT
+          value: "$(params.SNAPSHOT)"
+      taskSpec:
+        params:
+          - name: SNAPSHOT
+            type: string
+        steps:
+          - name: test-output
+            # kubectl image with jq — resolves the image from the snapshot and
+            # runs it as a Job to verify the container prints "hello world"
+            image: quay.io/ongres/kubectl@sha256:4be5050c456a4751fe3d70086c0387d65e8973a176fe965de4eaeeb8643b2e0a
+            env:
+              - name: SNAPSHOT
+                value: "$(params.SNAPSHOT)"
+              - name: NAMESPACE
+                # Injected automatically by Tekton — the namespace the PipelineRun runs in
+                value: "$(context.pipelineRun.namespace)"
+            script: |
+              #!/usr/bin/bash
+              set -euxo pipefail
+
+              # Extract the built image from the snapshot (first component)
+              IMAGE=$(echo "$SNAPSHOT" | jq -r '.components[0].containerImage')
+              echo "Extracted image: $IMAGE"
+
+              # Clean up any leftover job or pods from a previous run
+              kubectl delete job --ignore-not-found test-hello -n $NAMESPACE
+              kubectl delete pods --ignore-not-found -l job-name=test-hello -n $NAMESPACE
+
+              # Run the testrepo image as a short-lived Job
+              kubectl create job test-hello -n $NAMESPACE --image=$IMAGE
+
+              # Wait up to 120s for the Job to complete (entrypoint.sh exits after printing)
+              kubectl wait --for=condition=complete job/test-hello --timeout=120s
+
+              # Capture the pod logs and assert the expected output
+              LOGS=$(kubectl logs -l job-name=test-hello -n $NAMESPACE)
+
+              # Clean up the Job after capturing logs
+              kubectl delete job --ignore-not-found test-hello -n $NAMESPACE
+
+              # This is the actual test assertion — fails the pipeline if output is wrong
+              echo $LOGS | grep "hello world"
