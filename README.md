@@ -7,6 +7,8 @@ Production-ready YAML blueprints and an interactive learning guide for Konflux C
 
 Each numbered directory maps to one topic in the learning guide. Follow them in order — each step builds on the previous one. Every directory contains a `README.md` with enough detail to implement the step independently, plus a shell script that prompts for required values interactively.
 
+📖 **Blog:** [Konflux CI on OpenShift — Build, Sign, Test & Release with Enterprise Contract and SLSA Provenance](https://blackhatinside.com/2026/07/17/konflux-ci-on-openshift-build-sign-test-release-with-enterprise-contract-and-slsa-provenance/)
+
 ## Prerequisites
 
 Before starting, confirm every item below is in place.
