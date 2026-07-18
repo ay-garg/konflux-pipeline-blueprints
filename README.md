@@ -3,6 +3,11 @@
 > **📖 Full learning guide with architecture diagrams, detailed commands, and step-by-step explanations:**
 > **[https://ay-garg.github.io/konflux-pipeline-blueprints/](https://ay-garg.github.io/konflux-pipeline-blueprints/)**
 
+## Hands-On Walkthrough
+[![YouTube Playlist](https://img.shields.io/badge/YouTube-Hands--On%20Playlist-red?logo=youtube)](https://www.youtube.com/playlist?list=PLdg3gLAAhk5E)
+Follow along with the step-by-step video series covering installation, build pipelines, integration tests, release workflows, and Enterprise Contract & SLSA provenance on OpenShift: [Konflux Pipeline Blueprints — YouTube Playlist](https://www.youtube.com/playlist?list=PLdg3gLAAhk5E)
+
+
 Production-ready YAML blueprints and an interactive learning guide for Konflux CI — covering build pipelines (single-arch and multi-arch), release pipelines, integration test scenarios, and Enterprise Contract policies on OpenShift and CRC.
 
 Each numbered directory maps to one topic in the learning guide. Follow them in order — each step builds on the previous one. Every directory contains a `README.md` with enough detail to implement the step independently, plus a shell script that prompts for required values interactively.
